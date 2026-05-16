@@ -1,7 +1,7 @@
 """
 run_experiment.py
 -----------------
-Runs the full experiment: every possible single-link failure on each topology
+This file runs the full experiment: every possible single-link failure on each topology
 for both RIP and SA-RIP, then produces summary CSVs and plots for the report.
 """
 
@@ -11,7 +11,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Make the src/ directory importable
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from network import build_topology_8, build_topology_14
@@ -96,10 +96,12 @@ def plot_convergence_bars(data, path):
                color="#4393c3", edgecolor="black")
         ax.set_xticks(x)
         ax.set_xticklabels(d["labels"], rotation=45, ha="right", fontsize=8)
-        ax.set_ylabel("Convergence time (s)")
+        ax.set_ylabel("Convergence time (s, log scale)")
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=0.01)  # Avoid log(0) issues; clamp tiny bars
         ax.set_title(f"Convergence time after each link failure — {d['name']}")
         ax.legend()
-        ax.grid(axis="y", linestyle="--", alpha=0.5)
+        ax.grid(axis="y", which="both", linestyle="--", alpha=0.5)
     plt.tight_layout()
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
@@ -142,7 +144,7 @@ def plot_summary(data, path):
         all_data.append(d["sarip_times"])
         all_labels.append(f"RIP\n{d['name']}")
         all_labels.append(f"SA-RIP\n{d['name']}")
-    axes[0].boxplot(all_data, labels=all_labels)
+    axes[0].boxplot(all_data, tick_labels=all_labels)
     axes[0].set_ylabel("Convergence time (s)")
     axes[0].set_title("Convergence Time Distribution")
     axes[0].set_yscale("log")
@@ -153,7 +155,7 @@ def plot_summary(data, path):
     for d in data:
         all_data.append(d["rip_msgs"])
         all_data.append(d["sarip_msgs"])
-    axes[1].boxplot(all_data, labels=all_labels)
+    axes[1].boxplot(all_data, tick_labels=all_labels)
     axes[1].set_ylabel("Post-failure messages")
     axes[1].set_title("Post-failure Message Count Distribution")
     axes[1].grid(axis="y", linestyle="--", alpha=0.5)

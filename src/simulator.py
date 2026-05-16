@@ -11,7 +11,7 @@ from router import Router
 
 RIP_UPDATE_INTERVAL = 30.0
 LINK_PROPAGATION    = 0.05
-MAX_SIM_TIME        = 120.0
+MAX_SIM_TIME        = 300.0
 SARIP_BOOTSTRAP_ROUNDS = 8   # enough rounds for any network diameter
 
 
