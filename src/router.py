@@ -51,7 +51,7 @@ class Router:
 
         self.dirty = False
 
-    # ---------- helpers ----------
+    # ---------- helper funcs ----------
 
     def neighbors(self):
         return list(self.graph.neighbors(self.name))

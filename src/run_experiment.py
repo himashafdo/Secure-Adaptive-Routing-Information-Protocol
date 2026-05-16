@@ -1,8 +1,11 @@
 """
 run_experiment.py
 -----------------
-Runs every single-link failure on each topology for both protocols.
-Saves CSV + four comparison plots (in real seconds and real message counts).
+This is the main driver script. It runs the simulation for every possible
+single link failure on both topologies, for both protocols (RIP and SA-RIP),
+saves all the numbers to a CSV, and produces the plots we put in the report.
+
+Basically: run it once, get all the results in results/.
 """
 
 import csv
@@ -11,24 +14,47 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
+
+# Make sure Python can find network.py and simulator.py even when we run
+# this file from the repo root (e.g. "python src/run_experiment.py").
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from network import build_topology_8, build_topology_14
 from simulator import Simulator, MAX_SIM_TIME
 
+
+# Everything we save (CSVs, PNGs) goes into this folder
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 def run_trial(graph_builder, link, mode):
+
+
+    """
+    Run one experiment: build a fresh topology, kill the given link at t=35s,
+    and measure how RIP or SA-RIP handled it.
+
+    Returns a dict with the four numbers we care about:
+    - initial convergence time (before failure)
+    - failure recovery time (how long until everything is correct again)
+    - how many messages were sent after the failure
+    - how many total route entries were advertised after the failure
+    """
     g = graph_builder()
     sim = Simulator(g, mode=mode)
     result = sim.run(link_to_kill=link, failure_at=35.0)
+
+    # If the protocol didn't converge in time, treat it as "took the whole window"
+    # so the plots still show something instead of crashing on a None.
 
     ct = result["convergence_time"]
     if ct is None:
         ct = MAX_SIM_TIME - 35.0
 
+    # Same idea for initial convergence — shouldn't really happen but just in case
+    
     ic = result["initial_convergence_time"]
     if ic is None:
         ic = 35.0  # never converged before failure (shouldn't happen)
@@ -42,16 +68,22 @@ def run_trial(graph_builder, link, mode):
 
 
 def run_topology(name, graph_builder):
+    """
+    Run a trial for every single link in this topology, for both RIP and SA-RIP.
+    Collects everything into one big dict so we can plot/save it later.
+    Prints progress to the terminal as it goes.
+    """
+
     g = graph_builder()
     links = list(g.edges())
 
     data = {
         "name": name,
-        "labels": [],
-        "rip_conv": [], "sarip_conv": [],
-        "rip_init": [], "sarip_init": [],
-        "rip_msgs": [], "sarip_msgs": [],
-        "rip_entries": [], "sarip_entries": [],
+        "labels": [],   # e.g. "R0-R1" for the x-axis
+        "rip_conv": [], "sarip_conv": [], #recoverry time
+        "rip_init": [], "sarip_init": [], #initial convergence time (before failure)
+        "rip_msgs": [], "sarip_msgs": [], #messages sent after failure
+        "rip_entries": [], "sarip_entries": [], #route entries advertised after failure
     }
 
     print(f"\n--- Topology: {name} ({len(links)} links) ---")
@@ -74,6 +106,12 @@ def run_topology(name, graph_builder):
 
 
 def save_csv(data, path):
+
+    """
+    Dump all the raw numbers to a CSV file so we can look at them later
+    or open them in Excel.
+    """
+
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["topology", "link",
@@ -94,6 +132,13 @@ def save_csv(data, path):
 
 
 def _grouped_bar(ax, labels, rip_vals, sarip_vals, ylabel, title, log=False):
+
+    """
+    Helper that draws one grouped bar chart on a given matplotlib axis.
+    Two bars per x position: RIP (red) and SA-RIP (blue).
+    Used by both plot_metric and (in spirit) plot_means.
+    """
+
     x = np.arange(len(labels))
     w = 0.4
     ax.bar(x - w/2, rip_vals, w, label="RIP",
@@ -112,6 +157,12 @@ def _grouped_bar(ax, labels, rip_vals, sarip_vals, ylabel, title, log=False):
 
 
 def plot_metric(data, rip_key, sarip_key, ylabel, title_suffix, fname, log=False):
+
+    """
+    Plot one metric (e.g. recovery time) for both topologies, one subplot each.
+    Saves the resulting PNG to results/<fname>.
+    """
+
     fig, axes = plt.subplots(len(data), 1, figsize=(12, 4 * len(data)))
     if len(data) == 1:
         axes = [axes]
@@ -126,7 +177,14 @@ def plot_metric(data, rip_key, sarip_key, ylabel, title_suffix, fname, log=False
 
 
 def plot_means(data, fname):
-    """Bar chart with one bar per (topology, protocol, metric) — 4 panels."""
+    """
+    The 'summary at a glance' chart. Four panels, one for each metric.
+    Each panel has just two pairs of bars (one pair per topology),
+    showing the mean across all the trials for that topology.
+
+    This is the chart that goes in the report's Performance Analysis section.
+    """
+
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))
     metrics = [
         ("init", "Initial convergence time (s)", False),
@@ -163,6 +221,12 @@ def plot_means(data, fname):
 
 
 def print_summary(data):
+
+    """
+    Print a nice summary table at the end so we can copy the headline numbers
+    straight into the report without opening the CSV.
+    """
+
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
@@ -209,4 +273,6 @@ if __name__ == "__main__":
     # Mean-value summary chart
     plot_means(data, "summary_means.png")
 
+
+    # Print the final speedup numbers so we can put them in Section 4
     print_summary(data)
