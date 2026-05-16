@@ -26,9 +26,13 @@ class Simulator:
 
         self.routers = {n: Router(n, self.graph, mode=mode) for n in self.graph.nodes()}
 
-        self.convergence_time = None
+        self.convergence_time = None       # post-failure recovery time
+        self.initial_convergence_time = None  # time to first stable state
         self.failure_time = None
-        self.update_count = 0
+        self.update_count = 0              # post-failure message count
+        self.entry_count = 0               # post-failure total route entries advertised
+        self.pre_failure_msgs = 0
+        self.pre_failure_entries = 0
 
     def schedule(self, delay, cb):
         self._event_counter += 1
@@ -37,8 +41,12 @@ class Simulator:
     def send_update(self, sender, recipient, payload, seq_num):
         if not payload:
             return
-        if self.failure_time is not None:
+        if self.failure_time is None:
+            self.pre_failure_msgs += 1
+            self.pre_failure_entries += len(payload)
+        else:
             self.update_count += 1
+            self.entry_count += len(payload)
 
         def deliver():
             r = self.routers[recipient]
@@ -138,6 +146,15 @@ class Simulator:
             time, _, cb = heapq.heappop(self.events)
             self.now = time
             cb()
+
+            # Track initial convergence (before any failure)
+            if (self.failure_time is None
+                    and self.initial_convergence_time is None
+                    and self.now > 0.01):
+                if self.has_converged():
+                    self.initial_convergence_time = self.now
+
+            # Track post-failure convergence
             if self.failure_time is not None and self.convergence_time is None:
                 if self.has_converged():
                     self.convergence_time = self.now - self.failure_time
@@ -145,10 +162,14 @@ class Simulator:
 
         return {
             "mode": self.mode,
+            "initial_convergence_time": self.initial_convergence_time,
             "convergence_time": self.convergence_time,
             "failure_time": self.failure_time,
             "final_time": self.now,
             "update_count": self.update_count,
+            "entry_count": self.entry_count,
+            "pre_failure_msgs": self.pre_failure_msgs,
+            "pre_failure_entries": self.pre_failure_entries,
         }
 
 
