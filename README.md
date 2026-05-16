@@ -33,7 +33,6 @@ Extract the ZIP file and open a terminal inside the extracted folder.
 
 Then create a virtual environment:
 
-```bash
 python -m venv venv
 
 Activate the virtual environment:
