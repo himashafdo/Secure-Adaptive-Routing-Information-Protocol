@@ -56,12 +56,23 @@ class Router:
     def neighbors(self):
         return list(self.graph.neighbors(self.name))
 
+    # SA-RIP weighting constants for adaptive metric αH + βD + γC
+    ALPHA = 1.0    # hop count weight
+    BETA  = 0.1    # delay weight
+    GAMMA = 0.5    # congestion/capacity weight
+
     def link_cost(self, nb):
         if not self.graph.has_edge(self.name, nb):
             return self.infinity()
         if self.mode == "RIP":
             return 1
-        return self.graph[self.name][nb]["delay"]
+        # SA-RIP adaptive metric: αH + βD + γC
+        hop_cost = 1
+        delay = self.graph[self.name][nb]["delay"]
+        capacity = self.graph[self.name][nb]["capacity"]
+        congestion_cost = 100 / capacity  # lower capacity = more congestion
+        metric = self.ALPHA * hop_cost + self.BETA * delay + self.GAMMA * congestion_cost
+        return max(1, int(round(metric)))
 
     def infinity(self):
         return INFINITY_RIP if self.mode == "RIP" else INFINITY_SARIP

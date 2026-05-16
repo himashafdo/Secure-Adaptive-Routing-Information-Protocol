@@ -12,7 +12,7 @@ from router import Router
 RIP_UPDATE_INTERVAL = 30.0
 LINK_PROPAGATION    = 0.05
 MAX_SIM_TIME        = 300.0
-SARIP_BOOTSTRAP_ROUNDS = 8   # enough rounds for any network diameter
+SARIP_BOOTSTRAP_ROUNDS = 8
 
 
 class Simulator:
@@ -33,8 +33,6 @@ class Simulator:
     def schedule(self, delay, cb):
         self._event_counter += 1
         heapq.heappush(self.events, (self.now + delay, self._event_counter, cb))
-
-    # ---------- sending ----------
 
     def send_update(self, sender, recipient, payload, seq_num):
         if not payload:
@@ -59,8 +57,6 @@ class Simulator:
             payload = router.apply_poison_reverse(payload, nb)
             self.send_update(router.name, nb, payload, router.my_seq_num)
 
-    # ---------- bootstrap ----------
-
     def _schedule_rip_periodic(self):
         def fire():
             for r in self.routers.values():
@@ -69,14 +65,11 @@ class Simulator:
         self.schedule(0.0, fire)
 
     def _bootstrap_sarip(self):
-        """Several rounds of full updates so everyone learns the topology."""
         for i in range(SARIP_BOOTSTRAP_ROUNDS):
             def fire():
                 for r in self.routers.values():
                     self._send_full_update(r)
             self.schedule(i * LINK_PROPAGATION * 2, fire)
-
-    # ---------- failure ----------
 
     def kill_link(self, u, v):
         if not self.graph.has_edge(u, v):
@@ -92,11 +85,16 @@ class Simulator:
         if self.mode == "SA-RIP":
             self._send_full_update(ru)
             self._send_full_update(rv)
-        # RIP just waits for next periodic tick
-
-    # ---------- convergence ----------
 
     def has_converged(self, verbose=False):
+        """Compare each router's routing table to ground-truth shortest paths."""
+        # Build a weighted graph using the protocol's own link cost,
+        # so 'truth' uses the same metric the routers use.
+        weighted = nx.Graph()
+        for u, v in self.graph.edges():
+            cost = self.routers[u].link_cost(v)
+            weighted.add_edge(u, v, w=cost)
+
         mismatches = []
         for src in self.graph.nodes():
             router = self.routers[src]
@@ -104,7 +102,7 @@ class Simulator:
                 truth = nx.single_source_shortest_path_length(self.graph, src)
             else:
                 truth = nx.single_source_dijkstra_path_length(
-                    self.graph, src, weight="delay")
+                    weighted, src, weight="w")
 
             for dest in self.graph.nodes():
                 t = truth.get(dest)
@@ -125,8 +123,6 @@ class Simulator:
             for src, dest, t, b, via in mismatches[:20]:
                 print(f"  {src} -> {dest}: believed={b} via {via}, truth={t}")
         return len(mismatches) == 0
-
-    # ---------- main loop ----------
 
     def run(self, link_to_kill=None, failure_at=35.0):
         if self.mode == "RIP":
