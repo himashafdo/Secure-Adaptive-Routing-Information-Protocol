@@ -1,33 +1,3 @@
-# Secure Adaptive RIP (SA-RIP) Simulation
-
-EN2150 Communication Network Engineering — Routing Protocol Design Assignment
-**Team TeraHertz** — University of Moratuwa
-
-## Overview
-
-This repository contains the Python simulation comparing **traditional RIP** against our proposed **Secure Adaptive RIP (SA-RIP)** protocol. The simulation demonstrates SA-RIP's improvement over RIP in terms of convergence time after link failures.
-
-## Team Members
-
-- Udana Athukorala (230063B)
-- Bashitha Anthony (230159B)
-- Himasha Fernando (230186E)
-- Indeepa Perera (230395T)
-
-## Repository Structure
-
-```
-.
-├── src/
-│   ├── network.py         # Topology generation
-│   ├── router.py          # Router model (RIP + SA-RIP modes)
-│   ├── simulator.py       # Discrete-event simulation engine
-│   └── run_experiment.py  # Experiment driver — runs trials & plots
-├── results/               # Generated CSVs and plots
-├── requirements.txt
-└── README.md
-```
-
 ## How to Run
 
 ### Prerequisites
@@ -41,7 +11,7 @@ This repository contains the Python simulation comparing **traditional RIP** aga
 git clone https://github.com/himashafdo/Secure-Adaptive-Routing-Information-Protocol.git
 cd Secure-Adaptive-Routing-Information-Protocol
 python -m venv venv
-source venv/bin/activate     # On Windows: venv\Scripts\activate
+source venv/bin/activate     # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -51,26 +21,55 @@ pip install -r requirements.txt
 python src/run_experiment.py
 ```
 
-This runs the simulation on both 8-router and 14-router topologies, with many link-failure trials per topology, and saves results to `results/`.
+This runs the simulation on both the 8-router and 14-router topologies. For each topology, every single-link failure is tested as a separate trial under both RIP and SA-RIP, with results saved to `results/`.
 
-## What the Simulation Shows
+## Experimental Setup
 
-- A small/medium-sized network of routers runs distance-vector routing
-- At a random time, a randomly chosen link is severed
-- Both protocols are measured on **convergence time** — how long until every router in the network knows the new correct shortest paths
+- **Topologies:** 8-router and 14-router networks, each with multiple redundant paths
+- **Per-link parameters:** propagation delay (1–50 ms) and capacity (10 or 100 Mbps), assigned with fixed random seeds so RIP and SA-RIP run on identical conditions
+- **Failure injection:** each possible single-link failure is tested once per topology (13 trials on 8-router, 20 trials on 14-router)
+- **Failure time:** every trial fails the chosen link at simulated time t = 35 seconds, after both protocols have completed initial convergence
+- **Maximum simulated time:** 300 seconds (cap for non-converging cases)
+- **Convergence criterion:** every router's routing table matches the true shortest paths in the post-failure graph, computed by NetworkX
 
-### Key Differences Implemented
+### Protocol Differences Implemented
 
-| Behavior             | Traditional RIP                | SA-RIP                           |
-| -------------------- | ------------------------------ | -------------------------------- |
-| Periodic update      | Every 30 seconds (full table)  | Disabled (event-driven only)     |
-| Failure notification | Waits for next periodic update | Triggered selective update       |
-| Backup route         | None                           | Cached, activated instantly      |
-| Loop prevention      | Split horizon only             | Split horizon + sequence numbers |
+| Behavior             | Traditional RIP                | SA-RIP                                    |
+| -------------------- | ------------------------------ | ----------------------------------------- |
+| Routing metric       | Hop count                      | Adaptive: αH + βD + γC                    |
+| Periodic update      | Every 30 seconds (full table)  | Disabled (event-driven only)              |
+| Failure notification | Waits for next periodic update | Triggered selective update with cascade   |
+| Backup route         | None                           | Cached, promoted instantly on failure     |
+| Loop prevention      | Split horizon only             | Poison reverse + per-neighbor sequence #s |
+| Maximum hop count    | 15                             | 255                                       |
 
 ## Results Summary
 
-(To be filled in after running experiments — see `results/convergence_comparison.png`)
+Across all 33 trials (13 on the 8-router topology + 20 on the 14-router topology):
+
+| Metric                       | 8-router RIP | 8-router SA-RIP | 14-router RIP | 14-router SA-RIP |
+| ---------------------------- | ------------ | --------------- | ------------- | ---------------- |
+| Initial convergence (mean)   | 35.00 s      | 0.15 s          | 35.00 s       | 0.25 s           |
+| Failure recovery time (mean) | 27.36 s      | 0.085 s         | 73.05 s       | 0.185 s          |
+| Post-failure messages (mean) | 26           | 14              | 99            | 41               |
+| Post-failure entries (mean)  | 195          | 114             | 1047          | 561              |
+
+**SA-RIP is 323× faster than RIP on the 8-router topology and 395× faster on the 14-router topology**, while using approximately 2× fewer routing messages and 2× fewer total route entries advertised.
+
+See `results/` for per-link bar charts and the full CSV of raw data.
+
+## Files Generated by `run_experiment.py`
+
+- `results/convergence_data.csv` — raw per-trial measurements
+- `results/initial_convergence_per_link.png` — initial convergence per link, both protocols
+- `results/recovery_per_link.png` — failure recovery time per link (log scale)
+- `results/messages_per_link.png` — post-failure routing messages per link
+- `results/entries_per_link.png` — post-failure route entries advertised per link
+- `results/summary_means.png` — 4-panel summary of mean values across all trials
+
+## Limitations of the Simulation
+
+The simulation focuses on the **performance evaluation** of SA-RIP. Several design features of the protocol are described in the report but are not exercised in the simulation, including HMAC-SHA256 authentication, timestamp validation, multicast-based advertisement, sequence number bootstrapping across reboots, and the layered fallback strategy under simultaneous backup failure. These features are evaluated analytically in Section 5 of the report.
 
 ## License
 
