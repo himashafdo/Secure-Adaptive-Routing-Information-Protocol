@@ -3,247 +3,200 @@ router.py
 ---------
 Router model for the SA-RIP vs RIP simulation.
 
-Each Router maintains:
-  - A routing table mapping destination -> (next_hop, metric)
-  - A backup route cache (for SA-RIP only which we implemented)
-  - A sequence number table tracking the latest seq # seen from each neighbor
-  - A reference to the network graph so it knows its neighbors
+Each router stores:
+  - The most recent distance vector advertised by each neighbor
+  - A derived routing table (primary + backup) recomputed from those vectors
+  - Sequence numbers per neighbor (SA-RIP only)
 
-Two protocol modes are supported via the `mode` field:
-  - "RIP"    : classic distance-vector with periodic full-table updates
-  - "SA-RIP" : triggered selective updates + backup route cache + seq numbers
-
-The Simulator (next file) is responsible for delivering messages between
-routers and ticking time forward. Routers themselves never touch the clock.
+Two modes:
+  - "RIP"    : full-table updates every 30s, hop-count metric
+  - "SA-RIP" : triggered updates on change, link-delay metric, backup cache
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Dict
 
 
 INFINITY_RIP = 16
-INFINITY_SARIP = 256 # as mentioned in the proposed protocol section
+INFINITY_SARIP = 256
 
 
 @dataclass
 class RouteEntry:
-    """One entry in a routing table."""
-    next_hop: str       
-    metric: int         
-    seq_num: int = 0    
+    next_hop: str
+    metric: int
 
 
 class Router:
-    """A single router participating in either RIP or SA-RIP."""
-
-    def __init__(self, name: str, graph, mode: str = "RIP"):
-        assert mode in ("RIP", "SA-RIP"), f"Unknown mode: {mode}"
+    def __init__(self, name, graph, mode="RIP"):
+        assert mode in ("RIP", "SA-RIP")
         self.name = name
-        self.graph = graph          
+        self.graph = graph
         self.mode = mode
 
-        
-        self.routing_table: Dict[str, RouteEntry] = {}
+        # Each neighbor's most recently advertised distance vector:
+        #   neighbor_name -> {destination: metric}
+        self.neighbor_vectors: Dict[str, Dict[str, int]] = {}
 
-        
+        # Derived tables
+        self.routing_table: Dict[str, RouteEntry] = {}
         self.backup_table: Dict[str, RouteEntry] = {}
 
-        
-        self.my_seq_num = 0                          
-        self.last_seen_seq: Dict[str, int] = {}     
+        # Sequence numbers
+        self.my_seq_num = 0
+        self.last_seen_seq: Dict[str, int] = {}
 
-    
+        # The router always knows about itself
+        self.routing_table[self.name] = RouteEntry(self.name, 0)
+
         self.dirty = False
 
-        self.routing_table[self.name] = RouteEntry(next_hop=self.name, metric=0)
-
-
-    # ------------------------------------------------------------------
+    # ---------- helpers ----------
 
     def neighbors(self):
-        """Live neighbors right now, based on the current graph state."""
         return list(self.graph.neighbors(self.name))
 
-    def link_cost(self, neighbor: str) -> int:
-        """
-        Cost of the direct link to a neighbor.
-
-        For RIP: always 1 (hop count).
-        For SA-RIP: we use the link delay as a stand-in for the αH+βD+γC metric.
-                    (Hop count is implicit in summation; congestion is constant
-                    for this experiment, so we hold it out for simplicity.)
-        """
-        if not self.graph.has_edge(self.name, neighbor):
-            return INFINITY_RIP if self.mode == "RIP" else INFINITY_SARIP
+    def link_cost(self, nb):
+        if not self.graph.has_edge(self.name, nb):
+            return self.infinity()
         if self.mode == "RIP":
             return 1
-        else:
-            return self.graph[self.name][neighbor]["delay"]
+        return self.graph[self.name][nb]["delay"]
 
-    def infinity(self) -> int:
+    def infinity(self):
         return INFINITY_RIP if self.mode == "RIP" else INFINITY_SARIP
 
-  
-    # ------------------------------------------------------------------
+    # ---------- building outgoing updates ----------
 
     def build_full_update(self):
-        """
-        Build a full routing-table update (sent by RIP every 30s).
-        Returns a list of (destination, metric) tuples.
-        Split horizon is applied per-neighbor when sending (see send_update).
-        """
-        return [(dest, entry.metric) for dest, entry in self.routing_table.items()]
+        return [(d, e.metric) for d, e in self.routing_table.items()]
 
-    def build_changed_update(self, changed_destinations):
-        """
-        Build a partial update containing only the destinations whose routes
-        recently changed (used by SA-RIP triggered updates).
-        """
-        return [(dest, self.routing_table[dest].metric)
-                for dest in changed_destinations if dest in self.routing_table]
+    def build_changed_update(self, changed):
+        return [(d, self.routing_table[d].metric) for d in changed
+                if d in self.routing_table]
 
-    def apply_split_horizon(self, update, recipient):
-        """
-        Don't tell a neighbor about routes you learned *from* that neighbor.
-        Returns a filtered update list.
-        """
-        filtered = []
+    def apply_poison_reverse(self, update, recipient):
+        """If a route was learned via `recipient`, advertise it as infinity."""
+        out = []
         for dest, metric in update:
             entry = self.routing_table.get(dest)
             if entry and entry.next_hop == recipient and dest != self.name:
-                continue  # skip — this route was learned from `recipient`
-            filtered.append((dest, metric))
-        return filtered
+                out.append((dest, self.infinity()))
+            else:
+                out.append((dest, metric))
+        return out
 
+    # ---------- receiving and recomputing ----------
 
-    # ------------------------------------------------------------------
-
-    def receive_update(self, sender: str, update, seq_num: int = 0):
+    def receive_update(self, sender, update, seq_num=0):
         """
-        Process a routing update from a neighbor.
-
-        Returns a set of destinations whose routes changed in our table,
-        so the simulator can trigger further updates (SA-RIP).
+        Store sender's advertised distance vector, then recompute our table.
+        Return the set of destinations whose primary route changed.
         """
-        # SA-RIP: reject stale or replayed updates by sequence number
+        # SA-RIP: reject replays
         if self.mode == "SA-RIP":
-            last_seen = self.last_seen_seq.get(sender, -1)
-            if seq_num <= last_seen:
-                return set()  # discard
+            if seq_num <= self.last_seen_seq.get(sender, -1):
+                return set()
             self.last_seen_seq[sender] = seq_num
 
-        link = self.link_cost(sender)
-        changed = set()
+        # Ignore updates from non-neighbors (link may have died)
+        if not self.graph.has_edge(self.name, sender):
+            return set()
 
-        for dest, advertised_metric in update:
+        # Store the sender's vector (overwriting any older one)
+        self.neighbor_vectors[sender] = {dest: metric for dest, metric in update}
+
+        return self._recompute()
+
+    def handle_link_failure(self, dead_nb):
+        """Drop the dead neighbor's vector and recompute."""
+        if dead_nb in self.neighbor_vectors:
+            del self.neighbor_vectors[dead_nb]
+        if dead_nb in self.last_seen_seq:
+            del self.last_seen_seq[dead_nb]
+        return self._recompute()
+
+    def _recompute(self):
+        """
+        Bellman-Ford-style: derive primary + backup routing tables from
+        the stored neighbor vectors and link costs.
+        Returns set of destinations whose primary changed.
+        """
+        # Gather every destination we know about (from any neighbor + ourselves)
+        all_dests = {self.name}
+        for vec in self.neighbor_vectors.values():
+            all_dests.update(vec.keys())
+
+        new_routing = {self.name: RouteEntry(self.name, 0)}
+        new_backup = {}
+
+        for dest in all_dests:
             if dest == self.name:
-                continue  # don't learn a route to ourselves from neighbors
+                continue
 
-            new_metric = advertised_metric + link
-            if new_metric > self.infinity():
-                new_metric = self.infinity()
+            # Gather all candidate (next_hop, total_metric) options
+            candidates = []
+            for nb, vec in self.neighbor_vectors.items():
+                if not self.graph.has_edge(self.name, nb):
+                    continue
+                adv = vec.get(dest, self.infinity())
+                if adv >= self.infinity():
+                    continue
+                total = adv + self.link_cost(nb)
+                if total >= self.infinity():
+                    continue
+                candidates.append((total, nb))
 
-            current = self.routing_table.get(dest)
+            if not candidates:
+                continue  # destination unreachable
 
-            # CASE 1: we have no route -> install this one
-            if current is None:
-                if new_metric < self.infinity():
-                    self.routing_table[dest] = RouteEntry(
-                        next_hop=sender, metric=new_metric, seq_num=seq_num)
-                    changed.add(dest)
+            candidates.sort()  # by metric ascending, then nb name
+            best_metric, best_nb = candidates[0]
+            new_routing[dest] = RouteEntry(best_nb, best_metric)
 
-            # CASE 2: update came from the current next-hop -> always trust it
-            elif current.next_hop == sender:
-                if new_metric != current.metric:
-                    # If the route just became unreachable, SA-RIP tries backup first
-                    if (self.mode == "SA-RIP"
-                            and new_metric >= self.infinity()
-                            and dest in self.backup_table):
-                        backup = self.backup_table.pop(dest)
-                        self.routing_table[dest] = backup
-                    else:
-                        current.metric = new_metric
-                        current.seq_num = seq_num
-                    changed.add(dest)
+            # Backup: best candidate that uses a different next_hop
+            for metric, nb in candidates[1:]:
+                if nb != best_nb:
+                    new_backup[dest] = RouteEntry(nb, metric)
+                    break
 
-            # CASE 3: alternative route from a different neighbor
-            else:
-                if new_metric < current.metric:
-                    # New route is better — demote the old one to backup (SA-RIP)
-                    if self.mode == "SA-RIP":
-                        self.backup_table[dest] = current
-                    self.routing_table[dest] = RouteEntry(
-                        next_hop=sender, metric=new_metric, seq_num=seq_num)
-                    changed.add(dest)
-                elif self.mode == "SA-RIP":
-                    # Worse than primary, but might be a useful backup
-                    backup = self.backup_table.get(dest)
-                    if backup is None or new_metric < backup.metric:
-                        self.backup_table[dest] = RouteEntry(
-                            next_hop=sender, metric=new_metric, seq_num=seq_num)
+        # Diff against old primary table to find what changed
+        changed = set()
+        old_dests = set(self.routing_table.keys())
+        new_dests = set(new_routing.keys())
+
+        for d in old_dests | new_dests:
+            old = self.routing_table.get(d)
+            new = new_routing.get(d)
+            if old is None and new is not None:
+                changed.add(d)
+            elif old is not None and new is None:
+                changed.add(d)
+            elif old.metric != new.metric or old.next_hop != new.next_hop:
+                changed.add(d)
+
+        # Also include explicitly-poisoned destinations we no longer have
+        for d in old_dests - new_dests:
+            changed.add(d)
+
+        self.routing_table = new_routing
+        self.backup_table = new_backup
 
         if changed:
             self.dirty = True
         return changed
 
-
-    # ------------------------------------------------------------------
-
-    def handle_link_failure(self, dead_neighbor: str):
-        """
-        Called by the simulator when a directly-connected link goes down.
-        Returns the set of destinations whose routes were invalidated.
-        """
-        affected = set()
-
-        # Find every routing entry that uses the dead neighbor as next-hop
-        for dest, entry in list(self.routing_table.items()):
-            if entry.next_hop == dead_neighbor:
-                # SA-RIP: try promoting the backup route immediately
-                if self.mode == "SA-RIP" and dest in self.backup_table:
-                    backup = self.backup_table.pop(dest)
-                    # Make sure the backup doesn't also depend on the dead neighbor
-                    if backup.next_hop != dead_neighbor:
-                        self.routing_table[dest] = backup
-                        affected.add(dest)
-                        continue
-                # No backup (or backup also broken): poison this route
-                entry.metric = self.infinity()
-                affected.add(dest)
-
-        if affected:
-            self.dirty = True
-        return affected
-
-
-    # ------------------------------------------------------------------
-
-    def known_destinations(self):
-        """Destinations this router currently believes are reachable."""
-        return {d for d, e in self.routing_table.items() if e.metric < self.infinity()}
-
     def __repr__(self):
         return f"Router({self.name}, {self.mode})"
 
 
-
-# ----------------------------------------------------------------------
 if __name__ == "__main__":
     from network import build_topology_8
-
     g = build_topology_8()
     r0 = Router("R0", g, mode="RIP")
     r1 = Router("R1", g, mode="RIP")
-
-    print(f"Created: {r0}, {r1}")
-    print(f"R0's neighbors: {r0.neighbors()}")
-    print(f"R0's link cost to R1: {r0.link_cost('R1')}")
-    print(f"R0's initial routing table: {r0.routing_table}")
-
-    
-    update = r1.build_full_update()
-    changed = r0.receive_update("R1", update, seq_num=1)
-    print(f"\nAfter receiving R1's update, R0 changed routes for: {changed}")
-    print(f"R0's table now:")
-    for dest, entry in r0.routing_table.items():
-        print(f"  {dest}: via {entry.next_hop}, metric {entry.metric}")
+    print(r0, r1)
+    changed = r0.receive_update("R1", r1.build_full_update(), seq_num=1)
+    print("Changed:", changed)
+    for d, e in r0.routing_table.items():
+        print(f"  {d}: via {e.next_hop}, metric {e.metric}")
