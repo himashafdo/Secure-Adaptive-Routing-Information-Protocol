@@ -5,7 +5,9 @@
 - Python 3.9+
 - pip
 
-### Setup
+### Setup 
+
+### Option 01 - if on github
 
 ```bash
 git clone https://github.com/himashafdo/Secure-Adaptive-Routing-Information-Protocol.git
@@ -23,6 +25,32 @@ python src/run_experiment.py
 
 This runs the simulation on both the 8-router and 14-router topologies. For each topology, every single-link failure is tested as a separate trial under both RIP and SA-RIP, with results saved to `results/`.
 
+
+
+### Option 02 - if using ZIP file
+
+Extract the ZIP file and open a terminal inside the extracted folder.
+
+Then create a virtual environment:
+
+```bash
+python -m venv venv
+
+Activate the virtual environment:
+# Windows
+venv\Scripts\activate
+
+# macOS / Linux
+source venv/bin/activate
+
+Install the required dependencies:
+
+pip install -r requirements.txt
+
+Run the experiment:
+python src/run_experiment.py
+
+This will run the same simulation and save the generated results inside the results/ folder.
 ## Experimental Setup
 
 - **Topologies:** 8-router and 14-router networks, each with multiple redundant paths
